@@ -1,0 +1,466 @@
+// PROPETRA — Prisma schema
+//
+// Phase 3: Hotel, Property, Room & Inventory Management.
+// Added: Hotel, RoomType, Room models (tenant-scoped).
+// Phase 4: Guest & Reservation Management.
+// Added: Guest, Reservation models (tenant-scoped).
+// Phase 5: Front Desk & Stay Operations.
+// Added: Stay model (tenant-scoped) — realized occupancy, kept distinct
+// from Reservation's booking intent per DATABASE-ARCHITECTURE.md.
+// Phase 6: Housekeeping.
+// Added: HousekeepingStatus model (tenant-scoped, 1:1 with Room) —
+// cleaning/readiness state, kept distinct from Room.status (occupancy).
+// Phase 7: Billing & Payments.
+// Added: Invoice, InvoiceLineItem, Payment — linked to Stay.
+// Phase 8: Reports — no new tables (read-only aggregation over existing data).
+// Phase 9: TEAM PETRA Central Administration.
+// No new tables — AdminModule operates on the existing Tenant/User models.
+// Phase 10: Production Hardening.
+// No schema changes beyond this comment; see PROJECT-STATE.md — Phase 10
+// found and removed a duplicated, stale copy of the entire Billing block
+// (InvoiceStatus/PaymentMethod/Invoice/Payment declared twice, with the
+// first copy an orphaned earlier draft that didn't match billing.service.ts
+// at all — no InvoiceLineItem, wrong enum values, wrong field names) and a
+// resulting invalid duplicate `Stay.invoices Invoice[]` relation field.
+// See /docs/DATABASE-ARCHITECTURE.md and /docs/MULTI-TENANCY.md.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum RoomStatus {
+  AVAILABLE
+  OCCUPIED
+  MAINTENANCE
+  OUT_OF_SERVICE
+}
+
+/// Reservation lifecycle. Deliberately limited to booking-intent states —
+/// the realized occupancy (actual check-in/check-out) is the future Stay
+/// entity (Phase 5 — Front Desk & Stay Operations), modeled separately per
+/// DATABASE-ARCHITECTURE.md so booking intent is never conflated with
+/// realized occupancy.
+enum ReservationStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+/// Realized-occupancy lifecycle. Deliberately minimal: a Stay only ever
+/// exists once check-in has happened, so there is no PENDING/CANCELLED
+/// state here — that ambiguity lives entirely on Reservation. See
+/// DATABASE-ARCHITECTURE.md — "Reservation / Stay".
+enum StayStatus {
+  ACTIVE
+  COMPLETED
+}
+
+/// Cleaning/readiness state of a room, independent of its occupancy
+/// status (RoomStatus). See DATABASE-ARCHITECTURE.md — Housekeeping Status.
+enum HousekeepingState {
+  DIRTY
+  IN_PROGRESS
+  CLEAN
+  INSPECTED
+}
+
+/// The tenant boundary. One tenant = one hotel client (see MULTI-TENANCY.md).
+model Tenant {
+  id        String       @id @default(uuid())
+  name      String
+  slug      String       @unique
+  status    TenantStatus @default(ACTIVE)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  users         User[]
+  roles         Role[]
+  refreshTokens RefreshToken[]
+  hotels        Hotel[]
+
+  @@map("tenants")
+}
+
+/// An account. Belongs to exactly one tenant, except TEAM PETRA platform
+/// users (tenantId null, isPlatformAdmin true) — see USER-ROLES.md.
+model User {
+  id              String     @id @default(uuid())
+  tenantId        String?
+  tenant          Tenant?    @relation(fields: [tenantId], references: [id])
+  email           String     @unique
+  passwordHash    String
+  firstName       String
+  lastName        String
+  isPlatformAdmin Boolean    @default(false)
+  status          UserStatus @default(ACTIVE)
+  roleId          String?
+  role            Role?      @relation(fields: [roleId], references: [id])
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  refreshTokens RefreshToken[]
+
+  @@index([tenantId])
+  @@map("users")
+}
+
+/// A named permission set, assignable to users within a tenant.
+/// tenantId null = a platform-level role (TEAM PETRA), per USER-ROLES.md.
+model Role {
+  id          String   @id @default(uuid())
+  tenantId    String?
+  tenant      Tenant?  @relation(fields: [tenantId], references: [id])
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+
+  users       User[]
+  permissions RolePermission[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("roles")
+}
+
+/// Individual capability grantable via a role. Shared reference data,
+/// not tenant-owned (see DATABASE-ARCHITECTURE.md).
+model Permission {
+  id          String @id @default(uuid())
+  key         String @unique
+  description String
+
+  roles RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+/// Hashed refresh tokens, so session revocation doesn't require trusting
+/// a stateless token alone (see SECURITY-ARCHITECTURE.md).
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenantId  String?
+  tenant    Tenant?   @relation(fields: [tenantId], references: [id])
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+/// Hotel/property details for a tenant. One tenant owns one hotel in the
+/// current model; one-to-many modeled to allow future multi-property support
+/// without a schema break (see DATABASE-ARCHITECTURE.md — Hotel notes).
+model Hotel {
+  id          String   @id @default(uuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  name        String
+  address     String?
+  city        String?
+  country     String?
+  phone       String?
+  email       String?
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  roomTypes    RoomType[]
+  guests       Guest[]
+  reservations Reservation[]
+  stays        Stay[]
+  invoices     Invoice[]
+  payments     Payment[]
+
+  @@index([tenantId])
+  @@map("hotels")
+}
+
+/// A category/configuration of rooms (e.g., "Deluxe King", "Standard Twin").
+/// Defines base attributes shared across rooms of the same type.
+model RoomType {
+  id          String   @id @default(uuid())
+  tenantId    String
+  hotelId     String
+  hotel       Hotel    @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  baseRate    Decimal  @db.Decimal(10, 2)
+  maxOccupancy Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  rooms Room[]
+
+  @@unique([hotelId, name])
+  @@index([tenantId])
+  @@index([hotelId])
+  @@map("room_types")
+}
+
+/// A physical, bookable room belonging to a hotel.
+model Room {
+  id         String     @id @default(uuid())
+  tenantId   String
+  hotelId    String
+  roomTypeId String
+  roomType   RoomType   @relation(fields: [roomTypeId], references: [id])
+  number     String
+  floor      Int?
+  status     RoomStatus @default(AVAILABLE)
+  notes      String?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  reservations Reservation[]
+  stays        Stay[]
+  housekeeping HousekeepingStatus?
+
+  @@unique([hotelId, number])
+  @@index([tenantId])
+  @@index([hotelId])
+  @@index([roomTypeId])
+  @@map("rooms")
+}
+
+/// A person associated with a hotel's bookings. Not a platform-wide
+/// identity — guest records belong to the tenant that collected them
+/// (see DATABASE-ARCHITECTURE.md — Guest notes).
+model Guest {
+  id             String   @id @default(uuid())
+  tenantId       String
+  hotelId        String
+  hotel          Hotel    @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  firstName      String
+  lastName       String
+  email          String?
+  phone          String?
+  address        String?
+  nationality    String?
+  documentNumber String?
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  reservations Reservation[]
+  stays        Stay[]
+
+  @@index([tenantId])
+  @@index([hotelId])
+  @@map("guests")
+}
+
+/// A booking linking a Guest to a Room for a date range. Kept distinct
+/// from the future Stay entity (Phase 5): a Reservation is booking
+/// intent, not realized occupancy (see DATABASE-ARCHITECTURE.md —
+/// Reservation / Stay notes).
+model Reservation {
+  id            String            @id @default(uuid())
+  tenantId      String
+  hotelId       String
+  hotel         Hotel             @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  guestId       String
+  guest         Guest             @relation(fields: [guestId], references: [id], onDelete: Restrict)
+  roomId        String
+  room          Room              @relation(fields: [roomId], references: [id], onDelete: Restrict)
+  checkInDate   DateTime          @db.Date
+  checkOutDate  DateTime          @db.Date
+  status        ReservationStatus @default(PENDING)
+  adults        Int               @default(1)
+  children      Int               @default(0)
+  notes         String?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  stay Stay?
+
+  @@index([tenantId])
+  @@index([hotelId])
+  @@index([guestId])
+  @@index([roomId])
+  @@index([roomId, checkInDate, checkOutDate])
+  @@map("reservations")
+}
+
+/// The realized-occupancy record for a Reservation: actual check-in
+/// through check-out. Kept as a distinct entity from Reservation (which
+/// only ever models booking intent) per DATABASE-ARCHITECTURE.md, so a
+/// no-show or cancelled booking never needs to pretend it was occupied.
+///
+/// `guestId`/`roomId` are intentionally denormalized from `reservation`
+/// (rather than requiring a join through it) — Front Desk's core query is
+/// "what's the current occupancy of this hotel", which needs to be fast
+/// and needs a Room and Guest column to filter/sort on directly. Both are
+/// set once at check-in from the reservation's own guest/room and never
+/// changed afterwards, so they cannot drift out of sync with it.
+model Stay {
+  id            String      @id @default(uuid())
+  tenantId      String
+  hotelId       String
+  hotel         Hotel       @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  reservationId String      @unique
+  reservation   Reservation @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+  guestId       String
+  guest         Guest       @relation(fields: [guestId], references: [id], onDelete: Restrict)
+  roomId        String
+  room          Room        @relation(fields: [roomId], references: [id], onDelete: Restrict)
+  status        StayStatus  @default(ACTIVE)
+  checkInAt     DateTime    @default(now())
+  checkOutAt    DateTime?
+  notes         String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@index([tenantId])
+  @@index([hotelId])
+  @@index([roomId])
+  @@index([guestId])
+  @@index([hotelId, status])
+
+  invoice Invoice?
+
+  @@map("stays")
+}
+
+/// Tracks the current cleaning/readiness state of a room (Phase 6 —
+/// Housekeeping). One row per room; created on demand the first time a
+/// room's housekeeping state is read or updated (see HousekeepingService).
+/// Deliberately separate from Room.status (occupancy), per
+/// DATABASE-ARCHITECTURE.md — Housekeeping Status notes.
+model HousekeepingStatus {
+  id              String            @id @default(uuid())
+  tenantId        String
+  hotelId         String
+  roomId          String            @unique
+  room            Room              @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  status          HousekeepingState @default(DIRTY)
+  notes           String?
+  updatedByUserId String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([tenantId])
+  @@index([hotelId])
+  @@map("housekeeping_statuses")
+}
+
+// Phase 7: Billing & Payments.
+// Added: Invoice, InvoiceLineItem, Payment — linked to Stay.
+// See /docs/DATABASE-ARCHITECTURE.md — Invoice / Payment notes.
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PAID
+  PARTIALLY_PAID
+  VOID
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  BANK_TRANSFER
+  OTHER
+}
+
+/// Billing record for a Stay. One invoice per stay (unique stayId).
+/// Line items capture individual charges (room rate per night, extras).
+/// paidAmount is maintained transactionally whenever a Payment is
+/// recorded or voided — never computed on-the-fly to avoid race conditions.
+/// Status transitions: DRAFT → ISSUED → PAID | PARTIALLY_PAID; any status → VOID.
+model Invoice {
+  id          String        @id @default(uuid())
+  tenantId    String
+  hotelId     String
+  hotel       Hotel         @relation(fields: [hotelId], references: [id], onDelete: Restrict)
+  stayId      String        @unique
+  stay        Stay          @relation(fields: [stayId], references: [id], onDelete: Restrict)
+  status      InvoiceStatus @default(DRAFT)
+  issuedAt    DateTime?
+  dueDate     DateTime?     @db.Date
+  notes       String?
+  totalAmount Decimal       @default(0) @db.Decimal(12, 2)
+  paidAmount  Decimal       @default(0) @db.Decimal(12, 2)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  lineItems InvoiceLineItem[]
+  payments  Payment[]
+
+  @@index([tenantId])
+  @@index([hotelId])
+  @@index([status])
+  @@map("invoices")
+}
+
+/// A single charge line on an invoice (e.g., "Room — 3 nights @ $150").
+model InvoiceLineItem {
+  id          String  @id @default(uuid())
+  tenantId    String
+  invoiceId   String
+  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  description String
+  quantity    Decimal @default(1) @db.Decimal(10, 2)
+  unitPrice   Decimal @db.Decimal(10, 2)
+  amount      Decimal @db.Decimal(12, 2)
+  createdAt   DateTime @default(now())
+
+  @@index([invoiceId])
+  @@index([tenantId])
+  @@map("invoice_line_items")
+}
+
+/// A payment recorded against an invoice. Soft-delete via voidedAt rather
+/// than hard delete, per DATABASE-ARCHITECTURE.md financial soft-delete policy.
+/// Recording a payment updates Invoice.paidAmount and Invoice.status in
+/// the same transaction.
+model Payment {
+  id        String        @id @default(uuid())
+  tenantId  String
+  hotelId   String
+  hotel     Hotel         @relation(fields: [hotelId], references: [id], onDelete: Restrict)
+  invoiceId String
+  invoice   Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  amount    Decimal       @db.Decimal(12, 2)
+  method    PaymentMethod @default(CASH)
+  reference String?
+  notes     String?
+  paidAt    DateTime      @default(now())
+  voidedAt  DateTime?
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  @@index([invoiceId])
+  @@index([tenantId])
+  @@index([hotelId])
+  @@map("payments")
+}

@@ -1,0 +1,61 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: propetra-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-propetra}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-propetra}
+      POSTGRES_DB: ${POSTGRES_DB:-propetra}
+    ports:
+      - "5433:5432"
+    volumes:
+      - propetra_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-propetra}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    container_name: propetra-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: ${API_PORT:-3001}
+      # Phase 10 fix: .env's DATABASE_URL points at "localhost", which
+      # inside this container resolves to the container itself, not the
+      # postgres service — every `docker compose up` was silently unable
+      # to reach the database. Override with the Compose service name,
+      # which always wins over env_file (Compose applies `environment`
+      # after `env_file`). See docs/DEPLOYMENT.md — Docker Networking.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-propetra}:${POSTGRES_PASSWORD:-propetra}@postgres:5432/${POSTGRES_DB:-propetra}?schema=public
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    container_name: propetra-web
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: ${WEB_PORT:-3000}
+    ports:
+      - "3002:3000"
+    depends_on:
+      - api
+
+volumes:
+  propetra_postgres_data:

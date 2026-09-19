@@ -1,0 +1,32 @@
+{
+  "name": "propetra",
+  "private": true,
+  "description": "PROPETRA — cloud-based, multi-tenant Property Management System (TEAM PETRA).",
+  "workspaces": [
+    "apps/api",
+    "apps/web"
+  ],
+  "scripts": {
+    "dev:api": "npm run start:dev --workspace=apps/api",
+    "dev:web": "npm run dev --workspace=apps/web",
+    "build:api": "npm run build --workspace=apps/api",
+    "build:web": "npm run build --workspace=apps/web",
+    "build": "npm run build:api && npm run build:web",
+    "lint:api": "npm run lint --workspace=apps/api",
+    "lint:web": "npm run lint --workspace=apps/web",
+    "test:api": "npm run test --workspace=apps/api",
+    "prisma:generate": "npm run prisma:generate --workspace=apps/api",
+    "prisma:migrate": "npm run prisma:migrate --workspace=apps/api"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "allowScripts": {
+    "@nestjs/core@10.4.22": true,
+    "@prisma/client@5.22.0": true,
+    "@prisma/engines@5.22.0": true,
+    "bcrypt@5.1.1": true,
+    "prisma@5.22.0": true,
+    "unrs-resolver@1.12.2": true
+  }
+}

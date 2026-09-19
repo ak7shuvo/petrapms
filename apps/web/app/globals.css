@@ -1,0 +1,10 @@
+/* PROPETRA — global styles placeholder.
+   Design tokens (typography, color, spacing) are intentionally not
+   defined yet — see /docs/UI-UX-DIRECTION.md. This file exists so the
+   app builds cleanly in Phase 1. */
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
