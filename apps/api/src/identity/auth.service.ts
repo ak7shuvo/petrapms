@@ -19,7 +19,7 @@ import {
 
 const BCRYPT_SALT_ROUNDS = 12;
 
-interface TokenPair {
+export interface TokenPair {
   accessToken: string;
   refreshToken: string;
 }
